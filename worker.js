@@ -298,8 +298,13 @@ const HTML_TEMPLATE = `
         }
 
         async function search() {
+            const query = document.getElementById('searchInput').value.trim();
+            if (!query) {
+                showToast('请输入搜索内容', 'error');
+                return;
+            }
+            
             showLoading();
-            const query = document.getElementById('searchInput').value;
             const apiParams = currentApiSource === 'custom' 
                 ? '&customApi=' + encodeURIComponent(customApiUrl)
                 : '&source=' + currentApiSource;
@@ -310,6 +315,11 @@ const HTML_TEMPLATE = `
                 
                 if (data.code === 400) {
                     showToast(data.msg);
+                    return;
+                }
+                
+                if (!data.list || data.list.length === 0) {
+                    showToast('没有找到相关内容', 'info');
                     return;
                 }
                 
@@ -328,12 +338,13 @@ const HTML_TEMPLATE = `
                 \`).join('');
             } catch (error) {
                 showToast('搜索请求失败，请稍后重试');
+                console.error('搜索错误:', error);
             } finally {
                 hideLoading();
             }
         }
 
-        async function showDetails(id,vod_name) {
+        async function showDetails(id, vod_name) {
             showLoading();
             try {
                 const apiParams = currentApiSource === 'custom' 
@@ -342,6 +353,11 @@ const HTML_TEMPLATE = `
                     
                 const response = await fetch('/api/detail?id=' + id + apiParams);
                 const data = await response.json();
+                
+                if (!data.episodes || data.episodes.length === 0) {
+                    showToast('没有找到播放链接', 'error');
+                    return;
+                }
                 
                 const modal = document.getElementById('modal');
                 const modalTitle = document.getElementById('modalTitle');
@@ -362,6 +378,7 @@ const HTML_TEMPLATE = `
                 modal.classList.remove('hidden');
             } catch (error) {
                 showToast('获取详情失败，请稍后重试');
+                console.error('详情错误:', error);
             } finally {
                 hideLoading();
             }
@@ -373,9 +390,10 @@ const HTML_TEMPLATE = `
             document.getElementById('modalContent').innerHTML = '';
         }
 
-        function playVideo(url,vod_name) {
+        function playVideo(url, vod_name) {
             showLoading();
             const modalContent = document.getElementById('modalContent');
+            const modalTitle = document.getElementById('modalTitle');
             const currentTitle = modalTitle.textContent.split(' - ')[0];
             const currentHtml = modalContent.innerHTML;
             
@@ -397,7 +415,7 @@ const HTML_TEMPLATE = `
                     <div class="space-y-6">
                         <div class="video-player">
                             <iframe 
-                                src="https://hoplayer.com/index.html?url=\${url}&autoplay=true"
+                                src="https://hoplayer.com/index.html?url=\${encodeURIComponent(url)}&autoplay=true"
                                 width="100%" 
                                 height="600" 
                                 frameborder="0" 
@@ -418,7 +436,7 @@ const HTML_TEMPLATE = `
                     <div class="space-y-6">
                         <div class="video-player">
                             <iframe 
-                                src="https://hoplayer.com/index.html?url=\${url}&autoplay=true"
+                                src="https://hoplayer.com/index.html?url=\${encodeURIComponent(url)}&autoplay=true"
                                 width="100%" 
                                 height="600" 
                                 frameborder="0" 
@@ -438,9 +456,9 @@ const HTML_TEMPLATE = `
         // 点击外部关闭设置面板
         document.addEventListener('click', function(e) {
             const panel = document.getElementById('settingsPanel');
-            const settingsButton = document.querySelector('button[onclick="toggleSettings()"]');
+            const settingsButton = document.querySelector('button[onclick="toggleSettings(event)"]');
             
-            if (!panel.contains(e.target) && !settingsButton.contains(e.target) && panel.classList.contains('show')) {
+            if (!panel.contains(e.target) && e.target !== settingsButton && panel.classList.contains('show')) {
                 panel.classList.remove('show');
             }
         });
@@ -459,46 +477,90 @@ const HTML_TEMPLATE = `
 const API_SITES = {
     heimuer: {
         api: 'https://json.heimuer.xyz',
-        name: '黑木耳',
+        name: '黑莓影视',
         detail: 'https://heimuer.tv',
     },
-
     ffzy: {
-        api: 'http://ffzy5.tv',
+        api: 'https://ffzy5.tv',
         name: '非凡影视',
-        detail: 'http://ffzy5.tv',
+        detail: 'https://ffzy5.tv',
     },
 };
 
+// 缓存响应
+const cache = caches.default;
+
 async function handleRequest(request) {
     const url = new URL(request.url);
+    
+    // 处理API请求
+    if (url.pathname.startsWith('/api/')) {
+        return handleApiRequest(request);
+    }
+    
+    // 默认返回HTML页面
+    return new Response(HTML_TEMPLATE, {
+        headers: { 
+            'Content-Type': 'text/html',
+            'Cache-Control': 'public, max-age=3600'
+        },
+    });
+}
+
+async function handleApiRequest(request) {
+    const url = new URL(request.url);
     const customApi = url.searchParams.get('customApi') || '';
-    // API 路由处理
+    
+    // 检查缓存
+    const cacheKey = new Request(url.toString(), request);
+    const cachedResponse = await cache.match(cacheKey);
+    if (cachedResponse) {
+        return cachedResponse;
+    }
+    
+    // 搜索API
     if (url.pathname === '/api/search') {
         const searchQuery = url.searchParams.get('wd');
         const source = url.searchParams.get('source') || 'heimuer';
-
+        
+        // 测试请求不缓存
+        if (searchQuery === 'test') {
+            return testApiAvailability(source, customApi);
+        }
+        
         try {
             const apiUrl = customApi
                 ? customApi
-                : API_SITES[source].api + '/api.php/provide/vod/?ac=list&wd=' + encodeURIComponent(searchQuery);
+                : `${API_SITES[source].api}/api.php/provide/vod/?ac=list&wd=${encodeURIComponent(searchQuery)}`;
+            
             const response = await fetch(apiUrl, {
                 headers: {
-                    'User-Agent':
-                        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-                    Accept: 'application/json',
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+                    'Accept': 'application/json',
                 },
+                cf: {
+                    cacheTtl: 3600, // Cloudflare边缘缓存1小时
+                    cacheEverything: true,
+                }
             });
+            
             if (!response.ok) {
-                throw new Error('API 请求失败');
+                throw new Error('API请求失败');
             }
+            
             const data = await response.text();
-            return new Response(data, {
+            const apiResponse = new Response(data, {
                 headers: {
                     'Content-Type': 'application/json',
                     'Access-Control-Allow-Origin': '*',
+                    'Cache-Control': 'public, max-age=3600'
                 },
             });
+            
+            // 存入缓存
+            await cache.put(cacheKey, apiResponse.clone());
+            return apiResponse;
+            
         } catch (error) {
             return new Response(
                 JSON.stringify({
@@ -515,42 +577,112 @@ async function handleRequest(request) {
             );
         }
     }
-
+    
+    // 详情API
     if (url.pathname === '/api/detail') {
         const id = url.searchParams.get('id');
         const source = url.searchParams.get('source') || 'heimuer';
         const customApi = url.searchParams.get('customApi') || '';
-        const detailUrl = `https://r.jina.ai/${
-            customApi ? customApi : API_SITES[source].detail
-        }/index.php/vod/detail/id/${id}.html`;
-        const response = await fetch(detailUrl);
-        const html = await response.text();
-
-        // 更新正则表达式以匹配新的 URL 格式
-        let matches = [];
-        if (source === 'ffzy') {
-            matches = html.match(/(?<=\$)(https?:\/\/[^"'\s]+?\/\d{8}\/\d+_[a-f0-9]+\/index\.m3u8)/g) || [];
-            matches = matches.map(link => link.split('(')[1]);
-        } else {
-            matches = html.match(/\$https?:\/\/[^"'\s]+?\.m3u8/g) || [];
-            matches = matches.map(link => link.substring(1)); // 移除开头的 $
+        
+        try {
+            const detailUrl = customApi 
+                ? `${customApi}/index.php/vod/detail/id/${id}.html`
+                : `${API_SITES[source].detail}/index.php/vod/detail/id/${id}.html`;
+            
+            const response = await fetch(detailUrl, {
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+                },
+                cf: {
+                    cacheTtl: 3600,
+                }
+            });
+            
+            if (!response.ok) {
+                throw new Error('详情请求失败');
+            }
+            
+            const html = await response.text();
+            let matches = [];
+            
+            if (source === 'ffzy') {
+                matches = html.match(/(?<=\$)(https?:\/\/[^"'\s]+?\/\d{8}\/\d+_[a-f0-9]+\/index\.m3u8)/g) || [];
+                matches = matches.map(link => link.split('(')[1]);
+            } else {
+                matches = html.match(/\$https?:\/\/[^"'\s]+?\.m3u8/g) || [];
+                matches = matches.map(link => link.substring(1)); // 移除开头的$
+            }
+            
+            const apiResponse = new Response(
+                JSON.stringify({
+                    episodes: matches,
+                    detailUrl: detailUrl,
+                }),
+                {
+                    headers: { 
+                        'Content-Type': 'application/json',
+                        'Cache-Control': 'public, max-age=3600'
+                    },
+                }
+            );
+            
+            // 存入缓存
+            await cache.put(cacheKey, apiResponse.clone());
+            return apiResponse;
+            
+        } catch (error) {
+            return new Response(
+                JSON.stringify({
+                    episodes: [],
+                    detailUrl: '',
+                }),
+                {
+                    headers: { 'Content-Type': 'application/json' },
+                },
+            );
         }
-
-        return new Response(
-            JSON.stringify({
-                episodes: matches,
-                detailUrl: detailUrl,
-            }),
-            {
-                headers: { 'Content-Type': 'application/json' },
-            },
-        );
     }
+    
+    return new Response('Not Found', { status: 404 });
+}
 
-    // 默认返回 HTML 页面
-    return new Response(HTML_TEMPLATE, {
-        headers: { 'Content-Type': 'text/html' },
-    });
+async function testApiAvailability(source, customApi) {
+    try {
+        const apiUrl = customApi
+            ? customApi
+            : `${API_SITES[source].api}/api.php/provide/vod/?ac=list&wd=test`;
+        
+        const response = await fetch(apiUrl, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+                'Accept': 'application/json',
+            },
+            timeout: 5000 // 5秒超时
+        });
+        
+        const data = await response.json();
+        return new Response(JSON.stringify({
+            code: data.code === 400 ? 400 : 200,
+            msg: data.msg || '测试成功',
+            list: [],
+        }), {
+            headers: {
+                'Content-Type': 'application/json',
+                'Access-Control-Allow-Origin': '*',
+            },
+        });
+    } catch (error) {
+        return new Response(JSON.stringify({
+            code: 400,
+            msg: 'API不可用',
+            list: [],
+        }), {
+            headers: {
+                'Content-Type': 'application/json',
+                'Access-Control-Allow-Origin': '*',
+            },
+        });
+    }
 }
 
 addEventListener('fetch', event => {
